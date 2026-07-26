@@ -3,7 +3,7 @@ name = "minivna"
 version = "0.1.1"
 edition = "2024"
 license = "MIT"
-description = "Observable, scriptable miniVNA Tiny data acquisition"
+description = "Native Rust CLI for controlling the miniVNA Tiny and collecting VNA measurements"
 
 [[bin]]
 name = "minivna"
