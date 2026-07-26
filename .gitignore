@@ -1,0 +1,6 @@
+/target/
+/VNA-D4/
+/VNA-D4_*/
+/TEST_*/
+/captures/
+*.tmp

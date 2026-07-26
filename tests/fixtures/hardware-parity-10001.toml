@@ -1,0 +1,12 @@
+output = "csv"
+directory_prefix = "PARITY_"
+
+[device]
+port = "auto"
+
+[scan]
+start = 45000000
+stop = 60000000
+points = 10001
+mode = "reflection"
+calibration = "/home/nate/Desktop/vnaj/minivna-rs/calibrations/NATES-miniVNA_Tiny.json"

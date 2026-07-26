@@ -1,0 +1,16 @@
+output = "csv"
+# Every run creates ./<directory_prefix><yyMMdd>_<HHmmss>/ under launch cwd.
+directory_prefix = "VNA-D4_"
+
+[device]
+# "auto" selects the single FTDI FT230X by stable /dev/serial/by-id identity.
+port = "auto"
+
+[scan]
+start = "45M"
+stop = "60M"
+# "max" uses the current complete-scan hardware evidence bound for this range.
+points = "max"
+mode = "reflection"
+# This placeholder is replaced with the full installed path when the file is created.
+calibration = __MINIVNA_DEFAULT_CALIBRATION_PATH__

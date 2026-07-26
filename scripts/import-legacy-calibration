@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 3 ]]; then
+    echo "usage: $0 VNAJ-JAR INPUT.cal OUTPUT.json" >&2
+    exit 2
+fi
+
+script_dir="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+project_dir="$(cd -- "${script_dir}/.." && pwd)"
+classes_dir="$(mktemp -d)"
+trap 'rm -rf -- "${classes_dir}"' EXIT
+
+javac -encoding UTF-8 -cp "$1" -d "${classes_dir}" \
+    "${project_dir}/tools/LegacyCalibrationExport.java"
+java -cp "$1:${classes_dir}" LegacyCalibrationExport "$2" "$3"
