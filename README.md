@@ -186,5 +186,8 @@ cargo clippy --all-targets -- -D warnings
 cargo build --release
 ```
 
-This source-informed rewrite of GPL-licensed vna/J behavior is licensed
-GPL-2.0-or-later.
+## License
+
+This project is licensed under the [MIT License](LICENSE). vna/J is separate
+third-party software used only by optional development and migration tools and
+remains subject to its own license.
