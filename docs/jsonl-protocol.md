@@ -45,11 +45,9 @@ printed as a user event.
 including the internal scan ID, timestamps, each `scan_progress`, and each
 `scan_sample`. Without `--debug`, internal scan IDs are not shown.
 
-Recovery events include `cancellation_requested`, `scan_cancelled`,
-`scan_failed`, `scan_retrying`,
-`device_controller_reset_completed`, `device_controller_reset_failed`,
-and `cancelled_scan_controller_reset_completed` or
-`cancelled_scan_controller_reset_failed`.
+Scan recovery events include `cancellation_requested`, `scan_cancelled`,
+`scan_failed`, and `scan_retrying`. Scan retries close and reopen the serial
+port but never enter the firmware bootloader.
 
 ## JSON scan file
 

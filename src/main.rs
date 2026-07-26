@@ -62,8 +62,6 @@ enum Command {
     },
     /// Run a guided calibration recipe and activate the generated calibration.
     Calibrate,
-    /// Restart the miniVNA controller and verify its firmware identity.
-    Reset,
     #[command(name = "__daemon", hide = true)]
     Daemon,
 }
@@ -439,7 +437,6 @@ struct ScanRequest {
     timeouts: ScanTimeouts,
     retries: usize,
     progress_every_points: usize,
-    usb_reset_on_retry: bool,
 }
 
 const PORT_IDLE_SECONDS: u64 = 60 * 60;
@@ -462,7 +459,6 @@ struct AcquisitionPlan<'a> {
     timeouts: ScanTimeouts,
     retries: usize,
     progress_every_points: usize,
-    usb_reset_on_retry: bool,
 }
 
 struct AcquisitionResult {
@@ -553,10 +549,6 @@ fn run(cli: Cli) -> Result<()> {
         Command::Calibrate => {
             stop_daemon_if_running(&loaded.path)?;
             run_calibration(loaded, &interrupted, &mut sink)
-        }
-        Command::Reset => {
-            stop_daemon_if_running(&loaded.path)?;
-            reset_controller(&loaded.settings.device, &mut sink)
         }
         Command::Daemon => run_daemon(loaded, &interrupted),
     }
@@ -680,7 +672,6 @@ fn run_calibration(
             timeouts,
             retries: SCAN_RETRIES,
             progress_every_points: PROGRESS_EVERY_POINTS,
-            usb_reset_on_retry: true,
         };
         let acquisition = acquire(&mut manager, plan, sink, |_, _| {
             if interrupted.swap(false, Ordering::Relaxed) {
@@ -1309,7 +1300,6 @@ fn run_daemon_scan(
         timeouts: request.timeouts,
         retries: request.retries,
         progress_every_points: request.progress_every_points,
-        usb_reset_on_retry: request.usb_reset_on_retry,
     };
     let acquisition = acquire(manager, plan, sink, |_, _| {
         if interrupted.load(Ordering::Relaxed) {
@@ -1376,7 +1366,6 @@ fn request_from_config(
         timeouts: automatic_scan_timeouts(spec.points),
         retries: SCAN_RETRIES,
         progress_every_points: PROGRESS_EVERY_POINTS,
-        usb_reset_on_retry: true,
     })
 }
 
@@ -1472,37 +1461,10 @@ where
                         "next_attempt": attempt + 2,
                         "stage": "direct_device_queries",
                         "error": format!("{error:#}"),
-                        "port_recovery": "close_reset_and_reopen"
+                        "port_recovery": "close_and_reopen"
                     }),
                 );
                 manager.recover();
-                if plan.usb_reset_on_retry {
-                    match manager.reset_controller() {
-                        Ok(firmware) => sink.emit(
-                            "device_controller_reset_completed",
-                            Some(plan.id),
-                            json!({
-                                "vid": "0403",
-                                "pid": "6015",
-                                "implementation": "native_chip45_serial_handshake",
-                                "firmware": firmware
-                            }),
-                        ),
-                        Err(reset_error) => {
-                            sink.emit(
-                                "device_controller_reset_failed",
-                                Some(plan.id),
-                                json!({
-                                    "error": format!("{reset_error:#}"),
-                                    "continuing": false
-                                }),
-                            );
-                            return Err(reset_error).context(
-                                "cannot safely retry without resetting the VNA controller",
-                            );
-                        }
-                    }
-                }
                 continue;
             }
             Err(error) => {
@@ -1626,28 +1588,6 @@ where
             }
             Err(error @ (ProtocolError::Cancelled { .. } | ProtocolError::Shutdown { .. })) => {
                 manager.recover();
-                if plan.usb_reset_on_retry {
-                    match manager.reset_controller() {
-                        Ok(firmware) => sink.emit(
-                            "cancelled_scan_controller_reset_completed",
-                            Some(plan.id),
-                            json!({
-                                "vid": "0403",
-                                "pid": "6015",
-                                "implementation": "native_chip45_serial_handshake",
-                                "firmware": firmware
-                            }),
-                        ),
-                        Err(reset_error) => sink.emit(
-                            "cancelled_scan_controller_reset_failed",
-                            Some(plan.id),
-                            json!({
-                                "error": format!("{reset_error:#}"),
-                                "warning": "the process will exit, but the instrument may continue streaming the cancelled scan until it is reset or finishes"
-                            }),
-                        ),
-                    }
-                }
                 return Err(error.into());
             }
             Err(error) if attempt < plan.retries => {
@@ -1662,33 +1602,6 @@ where
                     }),
                 );
                 manager.recover();
-                if plan.usb_reset_on_retry {
-                    match manager.reset_controller() {
-                        Ok(firmware) => sink.emit(
-                            "device_controller_reset_completed",
-                            Some(plan.id),
-                            json!({
-                                "vid": "0403",
-                                "pid": "6015",
-                                "implementation": "native_chip45_serial_handshake",
-                                "firmware": firmware
-                            }),
-                        ),
-                        Err(reset_error) => {
-                            sink.emit(
-                                "device_controller_reset_failed",
-                                Some(plan.id),
-                                json!({
-                                    "error": format!("{reset_error:#}"),
-                                    "continuing": false
-                                }),
-                            );
-                            return Err(reset_error).context(
-                                "cannot safely retry without resetting the VNA controller",
-                            );
-                        }
-                    }
-                }
             }
             Err(error) => {
                 manager.recover();
@@ -1832,25 +1745,6 @@ fn emit_calibration_loaded(sink: &mut EventSink, id: Option<&str>, calibration: 
     );
 }
 
-fn reset_controller(settings: &DeviceSettings, sink: &mut EventSink) -> Result<()> {
-    let mut manager = DeviceManager::new(to_device_config(settings));
-    let port = manager.ensure_open()?.to_owned();
-    manager.close();
-    let firmware = manager.reset_controller()?;
-    sink.emit(
-        "device_controller_reset_completed",
-        None,
-        json!({
-            "port": port,
-            "vid": "0403",
-            "pid": "6015",
-            "implementation": "native_chip45_serial_handshake",
-            "firmware": firmware
-        }),
-    );
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1867,6 +1761,11 @@ mod tests {
         assert!(!normal.debug);
         let debug = Cli::try_parse_from(["minivna", "scan", "--debug"]).unwrap();
         assert!(debug.debug);
+    }
+
+    #[test]
+    fn reset_is_not_a_supported_command() {
+        assert!(Cli::try_parse_from(["minivna", "reset"]).is_err());
     }
 
     #[test]

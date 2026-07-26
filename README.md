@@ -144,9 +144,9 @@ the serial port.
 The daemon keeps the serial port open for one hour after a scan finishes.
 Another invocation of `minivna scan` connects to the same daemon, reuses the
 open port, and resets the one-hour clock. After one idle hour the daemon closes
-the port and exits; a later scan starts a new daemon automatically. `reset` and
-`calibrate` first stop an idle daemon so they can take exclusive ownership of
-the instrument.
+the port and exits; a later scan starts a new daemon automatically. `calibrate`
+first stops an idle daemon so it can take exclusive ownership of the
+instrument.
 
 Serial settings, adaptive deadlines, safe retry policy, per-point progress,
 the startup quiet-input gate, exact calibration interpolation, and direct
@@ -163,18 +163,6 @@ See [configuration](docs/configuration.md), [JSONL protocol](docs/jsonl-protocol
 [Raspberry Pi capture investigation](docs/raspberry-pi-capture-investigation.md).
 
 ## Native runtime
-
-`reset` requests the Tiny's native Chip45 serial bootloader handshake and
-accepts success only after the restarted application answers with `FW Tiny
-...`:
-
-```bash
-minivna reset
-```
-
-The application firmware reads that request only at a command boundary.
-Consequently, `reset` is not an in-scan cancellation mechanism; an instrument
-already streaming a scan may require a physical power disconnect.
 
 The Java files under `tools/` and `tests/oracle/` are optional migration and
 test-oracle utilities.

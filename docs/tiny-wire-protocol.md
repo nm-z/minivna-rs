@@ -64,6 +64,6 @@ preserves the vna/J outbound scan sequence, so it instead requires a quiet
 input window before its temperature and supply queries and refuses any
 unsolicited residual bytes it observes.
 
-The controller also reads its reset request only at a command boundary. A
-controller already executing a scan may therefore require a physical power
-disconnect before another acquisition is safe.
+If the controller remains busy after the serial port is closed, allow the scan
+to finish or physically disconnect power before starting another acquisition.
+The production runtime never enters the firmware bootloader.

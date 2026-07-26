@@ -1,7 +1,6 @@
 use std::fs;
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
-use std::thread;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, anyhow, bail};
@@ -13,7 +12,6 @@ use crate::protocol::{
 };
 
 pub const DEFAULT_BAUD: u32 = 921_600;
-const BOOTLOADER_BAUD: u32 = 230_400;
 const FTDI_VID: u16 = 0x0403;
 const FT230X_PID: u16 = 0x6015;
 
@@ -163,78 +161,6 @@ impl DeviceManager {
         Ok(())
     }
 
-    /// Requests the miniVNA Tiny's Chip45 bootloader and restarts the
-    /// application. The application only parses this request at a command
-    /// boundary, so it cannot be relied upon to interrupt an active scan.
-    /// Success requires a subsequent application-firmware identity response.
-    pub fn reset_controller(&mut self) -> Result<String> {
-        self.ensure_open()?;
-        let port = self.port.as_mut().expect("ensure_open before reset");
-        port.clear(ClearBuffer::All)
-            .context("failed to clear serial buffers before controller reset")?;
-        port.write_all(b"99\r")
-            .context("failed to send miniVNA controller reset command")?;
-        port.flush()
-            .context("failed to flush miniVNA controller reset command")?;
-        thread::sleep(Duration::from_millis(50));
-        port.set_baud_rate(BOOTLOADER_BAUD)
-            .context("failed to select miniVNA bootloader baud rate")?;
-
-        let reset_result = (|| -> Result<()> {
-            port.clear(ClearBuffer::Input)
-                .context("failed to clear input before bootloader synchronization")?;
-            for _ in 0..100 {
-                port.write_all(b"U")
-                    .context("failed to send bootloader synchronization byte")?;
-                port.flush()
-                    .context("failed to flush bootloader synchronization byte")?;
-                thread::sleep(Duration::from_millis(10));
-            }
-            read_until_byte(
-                port.as_mut(),
-                b'>',
-                Duration::from_secs(3),
-                "bootloader prompt",
-            )?;
-            port.write_all(b"\n")
-                .context("failed to enter bootloader command mode")?;
-            port.flush()
-                .context("failed to flush bootloader command-mode request")?;
-            read_until_byte(
-                port.as_mut(),
-                b'-',
-                Duration::from_secs(3),
-                "bootloader command-mode acknowledgement",
-            )?;
-            port.write_all(b"g\n")
-                .context("failed to send bootloader start-application command")?;
-            port.flush()
-                .context("failed to flush bootloader start-application command")?;
-            // Some Tiny V1.0 units reset immediately and omit the `g+` echo
-            // expected by vna/J's flasher. The application firmware identity
-            // queried below is the stronger reset-success criterion.
-            thread::sleep(Duration::from_millis(250));
-            Ok(())
-        })();
-
-        port.set_baud_rate(DEFAULT_BAUD)
-            .context("failed to restore miniVNA application baud rate")?;
-        thread::sleep(Duration::from_millis(500));
-        port.clear(ClearBuffer::All)
-            .context("failed to clear buffers after controller reset")?;
-        reset_result?;
-
-        port.write_all(b"9\r")
-            .context("failed to query firmware after controller reset")?;
-        port.flush()
-            .context("failed to flush firmware query after controller reset")?;
-        let firmware = read_line(port.as_mut(), Duration::from_secs(2), "firmware query")?;
-        if !firmware.starts_with("FW Tiny ") {
-            bail!("controller reset returned unexpected firmware identity {firmware:?}");
-        }
-        Ok(firmware)
-    }
-
     fn query_u16(&mut self, command: &[u8], metric: &str, timeout: Duration) -> Result<u16> {
         let port = self.port.as_mut().expect("ensure_open before query");
         port.clear(ClearBuffer::All)
@@ -345,36 +271,6 @@ pub fn resolve_port(requested: &str) -> Result<String> {
 
 pub fn list_ports() -> Result<Vec<serialport::SerialPortInfo>> {
     serialport::available_ports().context("failed to enumerate serial ports")
-}
-
-fn read_until_byte(
-    port: &mut dyn SerialPort,
-    expected: u8,
-    timeout: Duration,
-    description: &str,
-) -> Result<()> {
-    let started = Instant::now();
-    let mut byte = [0_u8; 1];
-    while started.elapsed() < timeout {
-        match port.read(&mut byte) {
-            Ok(1) if byte[0] == expected => return Ok(()),
-            Ok(_) => {}
-            Err(error)
-                if matches!(
-                    error.kind(),
-                    io::ErrorKind::TimedOut
-                        | io::ErrorKind::WouldBlock
-                        | io::ErrorKind::Interrupted
-                ) => {}
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed while reading {description}"));
-            }
-        }
-    }
-    bail!(
-        "timed out after {} ms waiting for {description} byte 0x{expected:02x}",
-        timeout.as_millis()
-    )
 }
 
 fn read_line(port: &mut dyn SerialPort, timeout: Duration, description: &str) -> Result<String> {
