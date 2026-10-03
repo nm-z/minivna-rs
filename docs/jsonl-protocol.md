@@ -13,6 +13,8 @@ Without `--json`, the same events are human-readable. Configuration comes only
 from TOML and is reloaded for every scan. Stdin is not a command channel. The
 CLI exits after its scan output is safely published; the detached daemon keeps
 the serial port open for one idle hour so the next invocation can reuse it.
+With `scan --live`, the successful event sequence repeats immediately after
+each output is safely published, until Ctrl-C or an error.
 
 ## Events
 

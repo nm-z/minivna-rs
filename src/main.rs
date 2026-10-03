@@ -30,6 +30,12 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 use signal_hook::consts::signal::{SIGINT, SIGTERM};
 
+#[cfg(feature = "gui")]
+mod graph;
+#[cfg(not(feature = "gui"))]
+#[path = "graph_disabled.rs"]
+mod graph;
+
 #[derive(Parser, Debug)]
 #[command(version, about = None, disable_help_subcommand = true)]
 struct Cli {
@@ -49,13 +55,21 @@ struct Cli {
     #[arg(short = 'o', long = "output", global = true)]
     output: Option<OutputFormat>,
 
+    /// Open the live measurement graph. Implies `scan` when no command is supplied.
+    #[arg(long, global = true)]
+    gui: bool,
+
+    /// Repeat scans continuously. Implies `scan` when no command is supplied.
+    #[arg(long, global = true)]
+    live: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    /// Run one configured scan through the background port owner, then exit.
+    /// Run configured scans through the background port owner.
     Scan {
         #[arg(long, hide = true)]
         id: Option<String>,
@@ -95,6 +109,7 @@ struct EventSink {
     style_human_output: bool,
     debug_human_output: bool,
     target: EventTarget,
+    graph: Option<graph::GraphTelemetry>,
 }
 
 const ANSI_RESET: &str = "\x1b[0m";
@@ -102,6 +117,7 @@ const ANSI_BOLD: &str = "\x1b[1m";
 const ANSI_RL_GREEN: &str = "\x1b[38;2;0;174;107m";
 const ANSI_PHASE_RED: &str = "\x1b[38;2;242;40;60m";
 const PATH_LABEL_WIDTH: usize = "Output directory:".len();
+const DEVICE_READING_LABEL_WIDTH: usize = "Device temperature:".len();
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum OutputMode {
@@ -118,6 +134,7 @@ impl EventSink {
             style_human_output: !json_requested && io::stderr().is_terminal(),
             debug_human_output: !json_requested && debug_requested,
             target: EventTarget::Terminal,
+            graph: None,
         }
     }
 
@@ -129,7 +146,12 @@ impl EventSink {
             style_human_output: false,
             debug_human_output: false,
             target: EventTarget::DaemonClient(stream),
+            graph: None,
         }
+    }
+
+    fn attach_graph(&mut self, graph: graph::GraphTelemetry) {
+        self.graph = Some(graph);
     }
 
     fn emit_scan_sample(
@@ -190,6 +212,9 @@ impl EventSink {
     }
 
     fn emit_value(&mut self, value: Value) {
+        if let Some(graph) = &self.graph {
+            graph.observe(&value);
+        }
         if let EventTarget::DaemonClient(output) = &mut self.target {
             let response = DaemonResponse::Event { value };
             let _ = serde_json::to_writer(&mut *output, &response);
@@ -290,6 +315,32 @@ fn aligned_path_line(label: &str, path: impl std::fmt::Display, styled: bool) ->
     format!("{}{}{path}", bold_label(label, styled), " ".repeat(padding))
 }
 
+fn aligned_device_reading(
+    label: &str,
+    value: impl std::fmt::Display,
+    unit: &str,
+    styled: bool,
+) -> String {
+    let padding = DEVICE_READING_LABEL_WIDTH.saturating_sub(label.len()) + 1;
+    format!(
+        "{}{}{value} {unit}",
+        bold_label(label, styled),
+        " ".repeat(padding)
+    )
+}
+
+fn device_readings_summary(
+    temperature_c: impl std::fmt::Display,
+    supply_v: impl std::fmt::Display,
+    styled: bool,
+) -> String {
+    format!(
+        "{}\n{}",
+        aligned_device_reading("Device temperature:", temperature_c, "C", styled),
+        aligned_device_reading("Supply:", supply_v, "V", styled)
+    )
+}
+
 fn human_port_path(port: &str) -> String {
     fs::canonicalize(port)
         .unwrap_or_else(|_| PathBuf::from(port))
@@ -342,11 +393,12 @@ fn emit_human_event(event: &str, value: &Value, styled: bool) {
             aligned_path_line("Calibration:", plain_value(&value["source"]), styled)
         ),
         "device_readings" => eprintln!(
-            "{} {} C; {} {} V",
-            bold_label("Device temperature:", styled),
-            plain_value(&value["temperature_c"]),
-            bold_label("supply:", styled),
-            plain_value(&value["supply_v"])
+            "{}",
+            device_readings_summary(
+                plain_value(&value["temperature_c"]),
+                plain_value(&value["supply_v"]),
+                styled,
+            )
         ),
         "port_opened" => eprintln!("Opened {}", human_port_path(&plain_value(&value["port"]))),
         "scan_started" => eprintln!(
@@ -365,7 +417,7 @@ fn emit_human_event(event: &str, value: &Value, styled: bool) {
             plain_value(&value["points"])
         ),
         "calibration_standard_prompt" => eprintln!(
-            "\nStep {}/{} — {}: {}\nPress Enter when ready, or type q then Enter to abort",
+            "\nStep {}/{}: {}: {}\nPress Enter when ready, or type q then Enter to abort",
             plain_value(&value["step"]),
             plain_value(&value["total_steps"]),
             plain_value(&value["standard"]),
@@ -495,6 +547,8 @@ fn main() -> ExitCode {
 }
 
 fn run(cli: Cli) -> Result<()> {
+    let gui = cli.gui;
+    let live = cli.live;
     let config_path = match cli.config {
         Some(path) => path,
         None => default_config_path()?,
@@ -522,7 +576,11 @@ fn run(cli: Cli) -> Result<()> {
         );
     }
     let command = match cli.command {
+        Some(command) if (gui || live) && !matches!(&command, Command::Scan { .. }) => {
+            bail!("--gui and --live may only be used for scanning")
+        }
         Some(command) => command,
+        None if gui || live => Command::Scan { id: None },
         None => {
             Cli::command().print_help()?;
             println!();
@@ -538,13 +596,33 @@ fn run(cli: Cli) -> Result<()> {
         Command::Scan { id } => {
             let launch_directory =
                 std::env::current_dir().context("failed to determine launch cwd")?;
-            run_scan_client(
-                &loaded.path,
-                launch_directory,
-                id.unwrap_or_else(new_scan_id),
-                &interrupted,
-                &mut sink,
-            )
+            if gui {
+                let graph = graph::GraphTelemetry::new();
+                sink.attach_graph(graph.clone());
+                let config_path = loaded.path.clone();
+                let worker_interrupted = Arc::clone(&interrupted);
+                graph::run(graph, Arc::clone(&interrupted), move || {
+                    run_scan_loop(id, live, &worker_interrupted, |scan_id| {
+                        run_scan_client(
+                            &config_path,
+                            launch_directory.clone(),
+                            scan_id,
+                            &worker_interrupted,
+                            &mut sink,
+                        )
+                    })
+                })
+            } else {
+                run_scan_loop(id, live, &interrupted, |scan_id| {
+                    run_scan_client(
+                        &loaded.path,
+                        launch_directory.clone(),
+                        scan_id,
+                        &interrupted,
+                        &mut sink,
+                    )
+                })
+            }
         }
         Command::Calibrate => {
             stop_daemon_if_running(&loaded.path)?;
@@ -613,7 +691,7 @@ fn print_config_path(path: &Path, json_requested: bool) {
     } else {
         eprintln!(
             "{}",
-            aligned_path_line("config path:", path.display(), io::stderr().is_terminal())
+            aligned_path_line("Config file:", path.display(), io::stderr().is_terminal())
         );
     }
 }
@@ -867,6 +945,24 @@ fn daemon_socket_path(config_path: &Path) -> Result<PathBuf> {
         hash = hash.wrapping_mul(0x100000001b3);
     }
     Ok(runtime_directory.join(format!("{hash:016x}.sock")))
+}
+
+fn run_scan_loop<F>(
+    initial_id: Option<String>,
+    live: bool,
+    interrupted: &AtomicBool,
+    mut run_once: F,
+) -> Result<()>
+where
+    F: FnMut(String) -> Result<()>,
+{
+    let mut next_id = initial_id;
+    loop {
+        run_once(next_id.take().unwrap_or_else(new_scan_id))?;
+        if !live || interrupted.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+    }
 }
 
 fn run_scan_client(
@@ -1764,6 +1860,62 @@ mod tests {
     }
 
     #[test]
+    fn gui_is_a_global_scan_option() {
+        let cli = Cli::try_parse_from(["minivna", "scan", "--gui"]).unwrap();
+        assert!(cli.gui);
+        assert!(matches!(cli.command, Some(Command::Scan { .. })));
+    }
+
+    #[test]
+    fn live_is_a_global_scan_option() {
+        let cli = Cli::try_parse_from(["minivna", "scan", "--live"]).unwrap();
+        assert!(cli.live);
+        assert!(matches!(cli.command, Some(Command::Scan { .. })));
+    }
+
+    #[test]
+    fn gui_and_live_without_subcommand_are_accepted() {
+        let cli = Cli::try_parse_from(["minivna", "--gui", "--live"]).unwrap();
+        assert!(cli.gui);
+        assert!(cli.live);
+        assert!(cli.command.is_none());
+    }
+
+    #[test]
+    fn live_scan_loop_repeats_until_interrupted() {
+        let interrupted = AtomicBool::new(false);
+        let mut scan_ids = Vec::new();
+
+        run_scan_loop(Some("first-scan".to_owned()), true, &interrupted, |id| {
+            scan_ids.push(id);
+            if scan_ids.len() == 3 {
+                interrupted.store(true, Ordering::Relaxed);
+            }
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(scan_ids.len(), 3);
+        assert_eq!(scan_ids[0], "first-scan");
+        assert!(scan_ids[1].starts_with("scan-"));
+        assert!(scan_ids[2].starts_with("scan-"));
+    }
+
+    #[test]
+    fn normal_scan_loop_runs_once() {
+        let interrupted = AtomicBool::new(false);
+        let mut scans = 0;
+
+        run_scan_loop(None, false, &interrupted, |_| {
+            scans += 1;
+            Ok(())
+        })
+        .unwrap();
+
+        assert_eq!(scans, 1);
+    }
+
+    #[test]
     fn reset_is_not_a_supported_command() {
         assert!(Cli::try_parse_from(["minivna", "reset"]).is_err());
     }
@@ -1817,10 +1969,6 @@ mod tests {
     #[test]
     fn path_labels_share_one_visible_path_column() {
         assert_eq!(
-            aligned_path_line("config path:", "/config", false),
-            "config path:      /config"
-        );
-        assert_eq!(
             aligned_path_line("Output directory:", "/output", false),
             "Output directory: /output"
         );
@@ -1831,6 +1979,14 @@ mod tests {
         assert_eq!(
             aligned_path_line("Calibration:", "/calibration", true),
             "\x1b[1mCalibration:\x1b[0m      /calibration"
+        );
+    }
+
+    #[test]
+    fn device_readings_are_split_across_aligned_lines() {
+        assert_eq!(
+            device_readings_summary("60.8", "6.0", false),
+            "Device temperature: 60.8 C\nSupply:             6.0 V"
         );
     }
 

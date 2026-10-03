@@ -24,6 +24,28 @@ An explicit subcommand starts acquisition:
 minivna scan
 ```
 
+Add `--gui` for the live measurement graph. The graph closes and the client
+exits as soon as the completed output is confirmed:
+
+```bash
+minivna --gui
+```
+
+Repeat scans continuously, starting each new scan immediately after the
+previous output is published, until Ctrl-C:
+
+```bash
+minivna --live
+```
+
+`minivna --gui --live` combines the graph with continuous scanning in the same window.
+The explicit `scan` subcommand remains accepted with either option as well.
+All seven colored measurement traces are selected initially and remain
+individually toggleable from the legend. Frequency ticks automatically use
+Hz, kHz, MHz, or GHz. Enabled traces receive unit-correct Y scales for dB,
+degrees, ohms, and SWR ratio; each scale appears only while a matching trace
+is enabled.
+
 During a normal scan, one terminal line updates in place with completion
 percentage, calibrated return loss, and calibrated phase. The display rounds
 RL and phase to the same two decimal places as vna/J's CSV output. Use
@@ -135,11 +157,13 @@ activated in `scan.calibration`.
 
 ## Process and port lifetime
 
-Each `minivna scan` invocation is a short-lived client. It automatically starts
-one detached local daemon when necessary, submits exactly one scan, relays that
-scan's live output, waits for the selected file and `minivna.toml` snapshot to
-be published atomically, and exits. The daemon—not the terminal command—owns
-the serial port.
+A normal `minivna scan` invocation is a short-lived client. It automatically
+starts one detached local daemon when necessary, submits exactly one scan,
+relays that scan's live output, waits for the selected file and `minivna.toml`
+snapshot to be published atomically, and exits. With `--live`, the client
+immediately submits another scan after each successful publication, with no
+delay between scans, until Ctrl-C or an error. The daemon, not the terminal
+command, owns the serial port.
 
 The daemon keeps the serial port open for one hour after a scan finishes.
 Another invocation of `minivna scan` connects to the same daemon, reuses the
